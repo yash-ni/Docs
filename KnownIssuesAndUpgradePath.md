@@ -70,7 +70,7 @@ Before diving into the problem, it's essential to understand how data flows thro
 
 #### High-Level Data Flow
 
-When you send data from LabVIEW to another program:
+When you send data from LabVIEW to another gRPC application (client/server):
 
 ```mermaid
 graph LR
@@ -86,7 +86,7 @@ graph LR
         SEND["Send Over<br/>Network"]
     end
     
-    subgraph "Other Program"
+    subgraph "gRPC Application"
         RECEIVE["Receive &<br/>Convert Back"]
     end
     
@@ -104,7 +104,7 @@ graph LR
 graph LR
     subgraph "CLIENT SIDE"
         subgraph "1. LabVIEW Cluster (Client)"
-            LV_CLIENT["name: 'Sensor1'<br/>value: 72.5<br/>unit: 'F'"]
+            LV_CLIENT["name: 'Alice'<br/>age: 30<br/>active: TRUE"]
         end
         
         subgraph "2. Copy to Message"
@@ -112,7 +112,7 @@ graph LR
         end
         
         subgraph "3. Serialize"
-            BIN_CLIENT["Binary: 0A 07 53 65 6E..."]
+            BIN_CLIENT["Binary: 0A 05 41 6C 69..."]
         end
     end
     
@@ -122,7 +122,7 @@ graph LR
     
     subgraph "SERVER SIDE"
         subgraph "4. Deserialize"
-            BIN_SERVER["Binary: 0A 07 53 65 6E..."]
+            BIN_SERVER["Binary: 0A 05 41 6C 69..."]
         end
         
         subgraph "5. Copy from Message"
@@ -130,7 +130,7 @@ graph LR
         end
         
         subgraph "6. LabVIEW Cluster (Server)"
-            LV_SERVER["name: 'Sensor1'<br/>value: 72.5<br/>unit: 'F'"]
+            LV_SERVER["name: 'Alice'<br/>age: 30<br/>active: TRUE"]
         end
     end
     
@@ -152,16 +152,21 @@ graph LR
 sequenceDiagram
     participant LV_Client as LabVIEW Client
     participant CPP_Client as C++ Client Layer
+    participant PB_Client as Protobuf (Client)
     participant Network as Network (HTTP/2)
+    participant PB_Server as Protobuf (Server)
     participant CPP_Server as C++ Server Layer
     participant LV_Server as LabVIEW Server
 
     LV_Client->>CPP_Client: ClientUnaryCall2()
     CPP_Client->>CPP_Client: Create LVMessage (Request)
     CPP_Client->>CPP_Client: CopyFromCluster()
-    CPP_Client->>Network: Serialize & Send
-    Network->>CPP_Server: Receive Request
-    CPP_Server->>CPP_Server: Parse to LVMessage
+    CPP_Client->>PB_Client: _InternalSerialize()
+    PB_Client->>PB_Client: Encode to wire format
+    PB_Client->>Network: Binary bytes
+    Network->>PB_Server: Binary bytes
+    PB_Server->>PB_Server: Decode wire format
+    PB_Server->>CPP_Server: _InternalParse()
     CPP_Server->>CPP_Server: CopyToCluster()
     CPP_Server->>LV_Server: PostUserEvent()
     
@@ -169,10 +174,12 @@ sequenceDiagram
     
     LV_Server->>CPP_Server: SetOutput (Response Cluster)
     CPP_Server->>CPP_Server: CopyFromCluster()
-    CPP_Server->>CPP_Server: Serialize LVMessage
-    CPP_Server->>Network: Send Response
-    Network->>CPP_Client: Receive Response
-    CPP_Client->>CPP_Client: Parse to LVMessage
+    CPP_Server->>PB_Server: _InternalSerialize()
+    PB_Server->>PB_Server: Encode to wire format
+    PB_Server->>Network: Binary bytes
+    Network->>PB_Client: Binary bytes
+    PB_Client->>PB_Client: Decode wire format
+    PB_Client->>CPP_Client: _InternalParse()
     CPP_Client->>CPP_Client: CopyToCluster()
     CPP_Client->>LV_Client: Return Response Cluster
 ```
