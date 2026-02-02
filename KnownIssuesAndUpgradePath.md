@@ -15,7 +15,7 @@
    - 2.7 [Official Google Response](#27-official-google-response)
    - 2.8 [Required Solution](#28-required-solution-custom-grpc-serializationtraits)
    - 2.9 [Files Requiring Modification](#29-files-requiring-modification)
-   - 2.10 [Wire Format Encoding](#210-wire-format-encoding)
+   - 2.10 [Wire Format Encoding and Decoding](#210-wire-format-encoding-and-decoding)
    - 2.11 [Risk Assessment](#211-risk-assessment)
 3. [Issue #2: Code Generation Architecture Problems](#3-issue-2-code-generation-architecture-problems)
    - 3.1 [Problem Description](#31-problem-description)
