@@ -348,6 +348,7 @@ flowchart TB
 4. Protobuf calls `GetClassData()` → **now pure virtual, requires implementation** ⚠️
 5. Our `GetClassData()` returns `nullptr` (we can't construct valid `ClassData`)
 6. Protobuf tries to access `classData->cached_size_offset` → **💥 CRASH**
+7. Additionally, the wire format **decoder** functions (`ReadINT32`, `ReadUINT32`, `ReadINT64`, `ReadSINT32`, `ReadFIXED32`, `ReadFLOAT`, etc.) have been **removed** from `map_type_handler.h` (commit titled "Remove dead code" - file went from 610 to 377 lines). These were internal implementation details for map parsing, never part of the public API. The corresponding **encoder** functions (`WireFormatLite::WriteInt32ToArray`, etc.) remain available.
 
 ---
 
@@ -508,7 +509,7 @@ This section details the exact method call chain in the current implementation.
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 6. Individual Parse Methods  [lv_message.cc:200+]               │
-│    ptr = ReadINT32(ptr, &result);        // Read from wire      │
+│    ptr = ReadINT32(ptr, &result);        // Decode varint→int32 │
 │    auto v = make_shared<LVVariableMessageValue<int>>(...);      │
 │    _values.emplace(index, v);            // Store in map        │
 └─────────────────────────────────────────────────────────────────┘
@@ -638,42 +639,76 @@ The `SerializationTraits` solution removes this inheritance dependency while kee
 
 #### What About the Helper Methods?
 
-A key question: if we remove `protobuf::Message` inheritance, do we lose access to helper methods like `ReadINT32`, `PackedInt32Parser`, `WireFormatLite`, etc.?
+A key question: if we remove `protobuf::Message` inheritance, do we lose access to helper methods like `ReadINT32` (decoders), `PackedInt32Parser`, `WireFormatLite::WriteInt32ToArray` (encoders), etc.?
 
 **Answer: No.** These are **standalone functions** in the `google::protobuf::internal` namespace, NOT member methods of `protobuf::Message`:
 
 ```cpp
-// From google/protobuf/map_type_handler.h - these are FREE FUNCTIONS
+// DECODERS: From google/protobuf/map_type_handler.h - these are FREE FUNCTIONS
+// These convert wire format bytes → native C++ types
 namespace google::protobuf::internal {
 
-inline const char* ReadINT32(const char* ptr, int32* value) {
+inline const char* ReadINT32(const char* ptr, int32* value) {   // varint → int32
   return VarintParse(ptr, reinterpret_cast<uint32*>(value));
 }
-inline const char* ReadUINT32(const char* ptr, uint32* value) {
+inline const char* ReadUINT32(const char* ptr, uint32* value) { // varint → uint32
   return VarintParse(ptr, value);
 }
-inline const char* ReadINT64(const char* ptr, int64* value) {
+inline const char* ReadINT64(const char* ptr, int64* value) {   // varint → int64
   return VarintParse(ptr, reinterpret_cast<uint64*>(value));
 }
-// ... etc
+// ... etc (ReadSINT32, ReadSINT64, ReadFIXED32, ReadFIXED64, ReadFLOAT, ReadDOUBLE, ReadBOOL)
 
 }  // namespace
 ```
 
-The codebase already accesses these via `using namespace google::protobuf::internal;` (see [lv_message.cc](../src/lv_message.cc)).
+The codebase already accesses these via `using namespace google::protobuf::internal;` (see `lv_message.cc`).
 
 | After Removing Inheritance | Still Available | No Longer Available |
 |---------------------------|-----------------|---------------------|
-| **Wire format helpers** | ✅ `ReadINT32`, `ReadUINT32`, `ReadINT64`... | |
-| **Parsing utilities** | ✅ `ReadTag`, `ReadVarint`, `VarintParse` | |
+| **Decoders (wire → native)** | ✅ `VarintParse`, `UnalignedLoad`, `ReadVarintZigZag32/64` | ❌ `ReadINT32`, `ReadUINT32`, `ReadINT64`, `ReadSINT32`... |
+| **Encoders (native → wire)** | ✅ `WireFormatLite::WriteInt32ToArray`, `WriteUInt32ToArray`, `WriteSInt32ToArray`, `WriteFixed32ToArray`... | |
+| **Parsing utilities** | ✅ `ReadTag`, `ReadVarint32` | |
 | **Packed field parsers** | ✅ `PackedInt32Parser`, `PackedUInt64Parser`... | |
-| **Size calculations** | ✅ `WireFormatLite::TagSize`, `StringSize`... | |
+| **Size calculations** | ✅ `WireFormatLite::TagSize`, `Int32Size`, `StringSize`... | |
 | **Stream classes** | ✅ `CodedOutputStream`, `CodedInputStream` | |
 | **Orchestration** | | ❌ `ParseFromString()` |
 | **Orchestration** | | ❌ `SerializeToString()` |
 | **Orchestration** | | ❌ `ByteSizeLong()` (base impl) |
 
-**The custom `SerializationTraits<LVMessage>` solution replaces only the orchestration methods** — all wire-format encoding helpers remain available as free functions or utility classes.
+**Solution for removed `Read*` decoder helpers:** Compatibility wrappers can be added in `lv_message.cc` under a `proto_compat` namespace that call the underlying decoder functions which remain available in `parse_context.h`:
+
+```cpp
+namespace proto_compat {
+// Varint decoders (variable-length encoding)
+inline const char* ReadINT32(const char* ptr, int32_t* value) {
+    return VarintParse(ptr, reinterpret_cast<uint32_t*>(value));
+}
+inline const char* ReadUINT32(const char* ptr, uint32_t* value) {
+    return VarintParse(ptr, value);
+}
+inline const char* ReadSINT32(const char* ptr, int32_t* value) {
+    return ReadVarintZigZag32(ptr, value);  // ZigZag for signed
+}
+
+// Fixed-width decoders (raw memory layout)
+inline const char* ReadFIXED32(const char* ptr, uint32_t* value) {
+    *value = UnalignedLoad<uint32_t>(ptr);
+    return ptr + sizeof(uint32_t);
+}
+inline const char* ReadFLOAT(const char* ptr, float* value) {
+    *value = UnalignedLoad<float>(ptr);
+    return ptr + sizeof(float);
+}
+// ... etc for all Read* decoder functions
+}
+```
+
+**Note:** The corresponding **encoders** (`WireFormatLite::WriteInt32ToArray`, `WriteUInt32ToArray`, etc.) remain available as part of the public API and do not require compatibility wrappers.
+
+All call sites in `lv_message.cc` use `proto_compat::ReadINT32()` etc. instead of the bare function names, providing forward compatibility with newer protobuf versions while maintaining compatibility with current versions.
+
+**The custom `SerializationTraits<LVMessage>` solution replaces only the orchestration methods** — all wire-format encoding helpers remain available as free functions or utility classes (either directly or via the `proto_compat` wrappers).
 
 ### 2.6 Crash Symptoms
 
@@ -816,7 +851,7 @@ public:
 | `src/event_data.cc` | **Minor** | Update ByteBuffer usage |
 | `src/cluster_copier.cc` | **Minor** | May need interface updates |
 
-### 2.10 Wire Format Encoding
+### 2.10 Wire Format Encoding and Decoding
 
 The existing parsing/serialization logic (in `_InternalParse` and `_InternalSerialize`) can be preserved using protobuf's **public helper APIs**:
 
@@ -824,15 +859,43 @@ The existing parsing/serialization logic (in `_InternalParse` and `_InternalSeri
 // These are safe to use without Message inheritance:
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/wire_format_lite.h>
+```
 
-// Example: Writing a varint field
-void LVMessage::SerializeInt32(int field_number, int32_t value,
-                                google::protobuf::io::CodedOutputStream* output) {
-    output->WriteTag(google::protobuf::internal::WireFormatLite::MakeTag(
-        field_number, 
-        google::protobuf::internal::WireFormatLite::WIRETYPE_VARINT));
-    output->WriteVarint32SignExtended(value);
-}
+#### Encoders (Native C++ Types → Wire Format Bytes)
+
+The **encoder** functions convert native values to protobuf wire format. These remain available as public API:
+
+```cpp
+// WireFormatLite encoder functions (all remain available)
+WireFormatLite::WriteInt32ToArray(field_number, value, target);    // int32 → varint
+WireFormatLite::WriteUInt32ToArray(field_number, value, target);   // uint32 → varint
+WireFormatLite::WriteSInt32ToArray(field_number, value, target);   // int32 → ZigZag varint
+WireFormatLite::WriteFixed32ToArray(field_number, value, target);  // uint32 → 4 bytes
+WireFormatLite::WriteSFixed32ToArray(field_number, value, target); // int32 → 4 bytes
+WireFormatLite::WriteFloatToArray(field_number, value, target);    // float → 4 bytes
+WireFormatLite::WriteDoubleToArray(field_number, value, target);   // double → 8 bytes
+WireFormatLite::WriteBoolToArray(field_number, value, target);     // bool → varint
+WireFormatLite::WriteStringToArray(field_number, value, target);   // string → length-prefixed
+
+// CodedOutputStream for low-level encoding
+output->WriteTag(WireFormatLite::MakeTag(field_number, WIRETYPE_VARINT));
+output->WriteVarint32SignExtended(value);
+```
+
+#### Decoders (Wire Format Bytes → Native C++ Types)
+
+The **decoder** functions convert wire format bytes back to native values. The convenience `Read*` wrappers were removed, but underlying functions remain:
+
+```cpp
+// REMOVED (use proto_compat wrappers instead):
+// ReadINT32, ReadUINT32, ReadINT64, ReadSINT32, ReadFIXED32, ReadFLOAT, etc.
+
+// STILL AVAILABLE (underlying functions):
+VarintParse(ptr, &value);              // Decode varint
+UnalignedLoad<uint32_t>(ptr);          // Decode fixed32/float
+UnalignedLoad<uint64_t>(ptr);          // Decode fixed64/double
+ReadVarintZigZag32(ptr, &value);       // Decode sint32
+ReadVarintZigZag64(ptr, &value);       // Decode sint64
 ```
 
 ### 2.11 Risk Assessment
