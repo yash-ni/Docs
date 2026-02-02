@@ -14,9 +14,10 @@
    - 2.6 [Crash Symptoms](#26-crash-symptoms)
    - 2.7 [Official Google Response](#27-official-google-response)
    - 2.8 [Required Solution](#28-required-solution-custom-grpc-serializationtraits)
-   - 2.9 [Files Requiring Modification](#29-files-requiring-modification)
-   - 2.10 [Wire Format Encoding and Decoding](#210-wire-format-encoding-and-decoding)
-   - 2.11 [Risk Assessment](#211-risk-assessment)
+   - 2.9 [Unsupported Patterns in Current Implementation](#29-unsupported-patterns-in-current-implementation)
+   - 2.10 [Migration Plan: Removing protobuf::Message Inheritance](#210-migration-plan-removing-protobufmessage-inheritance)
+   - 2.11 [Wire Format Encoding and Decoding](#211-wire-format-encoding-and-decoding)
+   - 2.12 [Risk Assessment](#212-risk-assessment)
 3. [Issue #2: Code Generation Architecture Problems](#3-issue-2-code-generation-architecture-problems)
    - 3.1 [Problem Description](#31-problem-description)
    - 3.2 [Slow Generation Speed](#32-slow-generation-speed)
@@ -629,19 +630,37 @@ LabVIEW cluster
 
 #### Key Insight: The Inheritance Problem
 
-The **only reason** `LVMessage` inherits from `protobuf::Message` is to access:
-- `ParseFromString()` - orchestrates parsing, calls `_InternalParse()`
-- `SerializeToString()` - orchestrates serialization, calls `_InternalSerialize()`
+`LVMessage` inherits from `protobuf::Message` for two main reasons:
 
-**All actual serialization/deserialization logic is CUSTOM** - implemented in `LVMessage`. The inheritance is just for orchestration convenience, but it forces us to implement 20+ virtual methods we don't use (like `GetClassData()`, `GetMetadata()`, `MergeFrom()`, etc.).
+1. **Wrapper methods**: The base class provides `ParseFromString()` and `SerializeToString()` which handle all the **setup, memory management, and error handling** that wraps around the actual field-by-field reading/writing:
+   - **Memory allocation** for output buffers
+   - **Size calculation** (calling `ByteSizeLong()` which we override)
+   - **Buffer setup** (creating `CodedOutputStream`, positioning write pointers)
+   - **Calling our overrides**: `_InternalSerialize()` for writing, `_InternalParse()` for reading
+   - **Error handling** and return value management
+   
+   Without inheritance, we'd need to reimplement this wrapper logic ourselves. This is the main benefit of inheritance — we get this boilerplate for "free" and only override the actual field iteration methods.
 
-The `SerializationTraits` solution removes this inheritance dependency while keeping all our custom serialization logic intact.
+2. **gRPC integration**: When gRPC needs to serialize `LVMessage`, it looks for `SerializationTraits<LVMessage>`. Since we don't provide one, gRPC uses the default `SerializationTraits<protobuf::Message>`. This only works because `LVMessage` inherits from `protobuf::Message` — without inheritance, gRPC wouldn't know how to handle our message type at all.
+
+**The custom logic in `LVMessage` is the "glue code"** that maps between LabVIEW's `_values` map and protobuf's wire format helpers:
+
+| Layer | Implementation | Source |
+|-------|----------------|--------|
+| Wrapper | `SerializeToString()`, `ParseFromString()` | Inherited from `protobuf::Message` |
+| Field iteration & dispatch | `_InternalSerialize()`, `_InternalParse()` | Our overrides |
+| Wire format encoding | `WireFormatLite::WriteInt32ToArray()`, etc. | Protobuf helper functions |
+| Wire format decoding | `ReadINT32()`, `PackedInt32Parser()`, etc. | Protobuf helper functions |
+
+The inheritance forces us to implement 20+ virtual methods we don't use (like `GetClassData()`, `GetMetadata()`, `MergeFrom()`, etc.), while only giving us access to the wrapper methods.
+
+The `SerializationTraits` solution removes this inheritance dependency while keeping our custom field iteration logic and continuing to use protobuf's wire format helpers.
 
 #### What About the Helper Methods?
 
 A key question: if we remove `protobuf::Message` inheritance, do we lose access to helper methods like `ReadINT32` (decoders), `PackedInt32Parser`, `WireFormatLite::WriteInt32ToArray` (encoders), etc.?
 
-**Answer: No.** These are **standalone functions** in the `google::protobuf::internal` namespace, NOT member methods of `protobuf::Message`:
+**Answer: No.** These are **standalone functions** in the `google::protobuf::internal` namespace, NOT member methods of `protobuf::Message`. However, since they're in the **internal namespace**, they can still be changed or removed at any time (as we saw with `ReadINT32` and similar other methods being removed):
 
 ```cpp
 // DECODERS: From google/protobuf/map_type_handler.h - these are FREE FUNCTIONS
@@ -706,13 +725,13 @@ inline const char* ReadFLOAT(const char* ptr, float* value) {
 
 **Note:** The corresponding **encoders** (`WireFormatLite::WriteInt32ToArray`, `WriteUInt32ToArray`, etc.) remain available as part of the public API and do not require compatibility wrappers.
 
-All call sites in `lv_message.cc` use `proto_compat::ReadINT32()` etc. instead of the bare function names, providing forward compatibility with newer protobuf versions while maintaining compatibility with current versions.
+All call sites in `lv_message.cc` should use `proto_compat::ReadINT32()` etc. instead of the bare function names, providing forward compatibility with newer protobuf versions while maintaining compatibility with older versions.
 
-**The custom `SerializationTraits<LVMessage>` solution replaces only the orchestration methods** — all wire-format encoding helpers remain available as free functions or utility classes (either directly or via the `proto_compat` wrappers).
+**The custom `SerializationTraits<LVMessage>` solution replaces only the wrapper methods** — all wire-format encoding helpers remain available as free functions or utility classes (either directly or via the `proto_compat` wrappers).
 
 ### 2.6 Crash Symptoms
 
-When attempting to use the current `LVMessage` with newer protobuf:
+When attempting to use `LVMessage` with newer protobuf:
 
 1. **Initial workaround** of returning `nullptr` from `GetClassData()` causes:
    ```
@@ -838,20 +857,270 @@ public:
 }  // namespace grpc
 ```
 
-### 2.9 Files Requiring Modification
+### 2.9 Unsupported Patterns in Current Implementation
+
+The existing `LVMessage` implementation uses several patterns that are **not supported** by Google and pose significant risk for future upgrades:
+
+| Pattern | Risk | Impact |
+|---------|------|--------|
+| Inheriting from `protobuf::Message` | 🔴 High | Not a supported usage pattern; can break with any protobuf update |
+| Overriding `_InternalSerialize`/`_InternalParse` | 🔴 High | Internal methods; signatures can change without notice |
+| Using `google::protobuf::internal::*` functions | 🟠 Medium | No stability guarantees (e.g., `ReadINT32` was removed in newer versions) |
+| Virtual method overrides (`ByteSizeLong`, etc.) | 🟠 Medium | Expected to be protoc-generated, not manually implemented |
+
+#### Target Architecture
+
+The solution should:
+
+1. ✅ **Not inherit** from `google::protobuf::Message`
+2. ✅ Use only **public protobuf APIs** (`CodedInputStream`, `CodedOutputStream`, `WireFormatLite`)
+3. ✅ Use **custom `SerializationTraits`** for gRPC integration
+4. ✅ Be **immune to protobuf internal changes**
+
+### 2.10 Migration Plan: Removing protobuf::Message Inheritance
+
+This section details the complete migration from the unsupported inheritance-based approach to a fully compliant standalone implementation.
+
+#### 2.10.1 Dependencies on protobuf::Message
+
+The `LVMessage` class inherits from `google::protobuf::Message` and relies on:
+
+**Inherited Methods Used (must reimplement):**
+```cpp
+// These are called by our code via inheritance:
+Message::SerializeToString()    // Orchestrates serialization
+Message::ParseFromString()      // Orchestrates parsing
+```
+
+**Virtual Methods Overridden (can remove):**
+```cpp
+// Required by Message base class, but not needed standalone:
+Message* New(Arena*) const override;
+void Clear() final;
+bool IsInitialized() const final;
+void MergeFrom(const Message&) final;
+void CopyFrom(const Message&);
+Metadata GetMetadata() const final;
+size_t ByteSizeLong() const final;          // Keep logic, change signature
+const char* _InternalParse(...) override;   // Keep logic, change API
+uint8* _InternalSerialize(...) override;    // Keep logic, change API
+```
+
+**Internal Types Used (must replace):**
+```cpp
+google::protobuf::internal::CachedSize _cached_size_;  // Replace with int
+google::protobuf::UnknownFieldSet _unknownFields;      // Custom impl or remove
+google::protobuf::internal::ParseContext                // Replace with CodedInputStream
+google::protobuf::io::EpsCopyOutputStream               // Replace with CodedOutputStream
+```
+
+#### 2.10.2 Methods to Delete
+
+These methods exist only to satisfy the `protobuf::Message` interface and can be deleted:
+
+```cpp
+// DELETE ENTIRELY - not needed without inheritance:
+Message* New(google::protobuf::Arena* arena) const override;
+void SharedCtor();
+void SharedDtor();
+void ArenaDtor(void* object);
+void RegisterArenaDtor(google::protobuf::Arena*);
+void MergeFrom(const google::protobuf::Message& from) final;
+void MergeFrom(const LVMessage& from);
+void CopyFrom(const google::protobuf::Message& from);
+void CopyFrom(const LVMessage& from);
+void InternalSwap(LVMessage* other);
+google::protobuf::Metadata GetMetadata() const final;
+google::protobuf::UnknownFieldSet& UnknownFields();  // If dropping unknown field support
+```
+
+#### 2.10.3 Methods to Reimplement
+
+**Orchestration Methods (new implementations needed):**
+
+```cpp
+// OLD: Inherited from protobuf::Message
+// NEW: Our own implementation using public APIs
+
+bool LVMessage::SerializeToString(std::string* output) const {
+    size_t size = ByteSizeLong();
+    output->resize(size);
+    google::protobuf::io::ArrayOutputStream array_stream(
+        output->data(), static_cast<int>(size));
+    google::protobuf::io::CodedOutputStream coded_output(&array_stream);
+    SerializeInternal(&coded_output);
+    return !coded_output.HadError();
+}
+
+bool LVMessage::ParseFromString(const std::string& data) {
+    Clear();
+    google::protobuf::io::ArrayInputStream array_stream(
+        data.data(), static_cast<int>(data.size()));
+    google::protobuf::io::CodedInputStream coded_input(&array_stream);
+    return ParseInternal(&coded_input);
+}
+```
+
+**Internal Serialization (API change):**
+
+```cpp
+// OLD (internal API):
+uint8* _InternalSerialize(uint8* target, EpsCopyOutputStream* stream) const;
+
+// NEW (public API):
+void SerializeInternal(google::protobuf::io::CodedOutputStream* output) const {
+    for (const auto& e : _values) {
+        e.second->Serialize(output);  // Each value type writes itself
+    }
+}
+```
+
+**Internal Parsing (API change):**
+
+```cpp
+// OLD (internal API):
+const char* _InternalParse(const char* ptr, ParseContext* ctx);
+
+// NEW (public API):
+bool ParseInternal(google::protobuf::io::CodedInputStream* input) {
+    while (input->BytesUntilLimit() > 0) {
+        uint32_t tag = input->ReadTag();
+        if (tag == 0) break;
+        
+        uint32_t field_number = WireFormatLite::GetTagFieldNumber(tag);
+        // ... dispatch to field parsers
+    }
+    PostInteralParseAction();
+    return true;
+}
+```
+
+#### 2.10.4 Parse Methods Migration
+
+Each `Parse*` method must change from pointer-based to stream-based:
+
+**Example: ParseInt32**
+
+```cpp
+// OLD (internal API - pointer based):
+const char* LVMessage::ParseInt32(const MessageElementMetadata& fieldInfo, 
+                                   uint32_t index, const char* ptr, 
+                                   ParseContext* ctx) {
+    if (fieldInfo.isRepeated) {
+        auto v = std::make_shared<LVRepeatedMessageValue<int>>(index);
+        ptr = PackedInt32Parser(&(v->_value), ptr, ctx);  // Internal API
+        _values.emplace(index, v);
+    } else {
+        int32_t result;
+        ptr = proto_compat::ReadINT32(ptr, &result);      // Internal API
+        auto v = std::make_shared<LVVariableMessageValue<int>>(index, result);
+        _values.emplace(index, v);
+    }
+    return ptr;
+}
+
+// NEW (public API - stream based):
+bool LVMessage::ParseInt32(const MessageElementMetadata& fieldInfo,
+                           uint32_t index,
+                           google::protobuf::io::CodedInputStream* input) {
+    if (fieldInfo.isRepeated) {
+        auto v = std::make_shared<LVRepeatedMessageValue<int>>(index);
+        // Read packed repeated field
+        uint32_t length;
+        if (!input->ReadVarint32(&length)) return false;
+        auto limit = input->PushLimit(length);
+        while (input->BytesUntilLimit() > 0) {
+            int32_t value;
+            if (!input->ReadVarint32SignExtended(&value)) return false;
+            v->_value.Add(value);
+        }
+        input->PopLimit(limit);
+        _values.emplace(index, v);
+    } else {
+        int32_t result;
+        if (!input->ReadVarint32SignExtended(&result)) return false;
+        auto v = std::make_shared<LVVariableMessageValue<int>>(index, result);
+        _values.emplace(index, v);
+    }
+    return true;
+}
+```
+
+**All Parse Methods Requiring Migration:**
+
+| Method | Current API | New API |
+|--------|-------------|---------|
+| `ParseBoolean` | `ReadBOOL`, `PackedBoolParser` | `ReadVarint64` |
+| `ParseInt32` | `ReadINT32`, `PackedInt32Parser` | `ReadVarint32SignExtended` |
+| `ParseUInt32` | `ReadUINT32`, `PackedUInt32Parser` | `ReadVarint32` |
+| `ParseInt64` | `ReadINT64`, `PackedInt64Parser` | `ReadVarint64SignExtended` |
+| `ParseUInt64` | `ReadUINT64`, `PackedUInt64Parser` | `ReadVarint64` |
+| `ParseSInt32` | `ReadSINT32`, `PackedSInt32Parser` | `ReadVarint32` + ZigZag decode |
+| `ParseSInt64` | `ReadSINT64`, `PackedSInt64Parser` | `ReadVarint64` + ZigZag decode |
+| `ParseFloat` | `ReadFLOAT`, `PackedFloatParser` | `ReadLittleEndian32` + reinterpret |
+| `ParseDouble` | `ReadDOUBLE`, `PackedDoubleParser` | `ReadLittleEndian64` + reinterpret |
+| `ParseFixed32` | `ReadFIXED32`, `PackedFixed32Parser` | `ReadLittleEndian32` |
+| `ParseFixed64` | `ReadFIXED64`, `PackedFixed64Parser` | `ReadLittleEndian64` |
+| `ParseSFixed32` | `ReadSFIXED32`, `PackedSFixed32Parser` | `ReadLittleEndian32` |
+| `ParseSFixed64` | `ReadSFIXED64`, `PackedSFixed64Parser` | `ReadLittleEndian64` |
+| `ParseEnum` | `ReadENUM`, `PackedEnumParser` | `ReadVarint32SignExtended` |
+| `ParseString` | `InlineGreedyStringParser` | `ReadString` |
+| `ParseBytes` | `InlineGreedyStringParser` | `ReadString` |
+| `ParseNestedMessage` | `ParseMessage` | `ReadMessage` or manual |
+
+#### 2.10.5 Serialize Methods Migration
+
+The `LVMessageValue` subclasses also need updating:
+
+```cpp
+// OLD (internal API):
+class LVVariableMessageValue<int> {
+    uint8* Serialize(uint8* target, EpsCopyOutputStream* stream) const {
+        target = WireFormatLite::WriteInt32ToArray(_index, _value, target);
+        return target;
+    }
+};
+
+// NEW (public API):
+class LVVariableMessageValue<int> {
+    void Serialize(google::protobuf::io::CodedOutputStream* output) const {
+        WireFormatLite::WriteInt32(output, _index, _value);
+        // Or manually:
+        output->WriteTag(WireFormatLite::MakeTag(_index, WireFormatLite::WIRETYPE_VARINT));
+        output->WriteVarint32SignExtended(_value);
+    }
+};
+```
+
+#### 2.10.6 Files Requiring Modification
 
 | File | Change Type | Description |
 |------|-------------|-------------|
-| `src/lv_message.h` | **Major Rewrite** | Remove protobuf inheritance, add SerializationTraits |
-| `src/lv_message.cc` | **Major Rewrite** | Reimplement serialization using coded streams |
+| `src/lv_message.h` | **Major Rewrite** | Remove inheritance, update method signatures |
+| `src/lv_message.cc` | **Major Rewrite** | Reimplement all Parse* methods with CodedInputStream |
+| `src/message_value.h` | **Major Rewrite** | Update Serialize() to use CodedOutputStream |
+| `src/message_value.cc` | **Major Rewrite** | Update all value type serializers |
 | `src/lv_message_efficient.h` | **Major Rewrite** | Update derived class |
 | `src/lv_message_efficient.cc` | **Major Rewrite** | Update implementation |
-| `src/grpc_client.cc` | **Moderate** | Update all RPC call sites |
-| `src/grpc_server.cc` | **Moderate** | Update server message handling |
-| `src/event_data.cc` | **Minor** | Update ByteBuffer usage |
-| `src/cluster_copier.cc` | **Minor** | May need interface updates |
+| `src/grpc_client.cc` | **Minor** | Already uses SerializationTraits |
+| `src/grpc_server.cc` | **Minor** | May need minor updates |
+| `src/event_data.cc` | **Minor** | Already calls our methods directly |
 
-### 2.10 Wire Format Encoding and Decoding
+#### 2.10.8 Migration Strategy
+
+**Recommended approach: Incremental migration**
+
+1. **Phase 1:** Add custom `SerializationTraits<LVMessage>` to fix immediate crash
+2. **Phase 2:** Add parallel `CodedInputStream`-based parse methods alongside existing ones
+3. **Phase 3:** Switch `ParseFromString` to use new methods, validate
+4. **Phase 4:** Add parallel `CodedOutputStream`-based serialize methods
+5. **Phase 5:** Switch `SerializeToString` to use new methods, validate
+6. **Phase 6:** Remove `protobuf::Message` inheritance, delete dead code
+7. **Phase 7:** Remove compatibility wrappers for internal APIs (no longer needed)
+
+This allows testing at each phase and easy rollback if issues arise.
+
+### 2.11 Wire Format Encoding and Decoding
 
 The existing parsing/serialization logic (in `_InternalParse` and `_InternalSerialize`) can be preserved using protobuf's **public helper APIs**:
 
@@ -909,7 +1178,7 @@ ReadVarintZigZag64(ptr, &value);       // Decode sint64
 | `VarintParse`, `UnalignedLoad` | `google::protobuf::internal` | Low | 🔴 Internal, can change anytime |
 | `ReadVarintZigZag32/64` | `google::protobuf::internal` | Low | 🔴 Internal, can change anytime |
 
-**Current approach:** The `proto_compat` wrappers call functions from `google::protobuf::internal` namespace. These have **no stability guarantees** and could be changed or removed in any future protobuf release (just like `ReadINT32` was removed).
+**Short-term approach:** Use `proto_compat` wrappers that call functions from `google::protobuf::internal` namespace. These have **no stability guarantees** and could be changed or removed in any future protobuf release (just like `ReadINT32` was removed). However, the wrappers provide a single point of change if internals shift again.
 
 **Recommended long-term approach:** Migrate to the **public** `CodedInputStream` / `CodedOutputStream` classes which are the only truly stable APIs:
 
@@ -933,9 +1202,9 @@ output.WriteRaw(buffer, size);
 **Trade-offs:**
 - `CodedInputStream`/`CodedOutputStream` are slightly slower due to stream abstraction overhead
 - The `proto_compat` wrappers provide a single point of change if internals shift again
-- Consider migrating to stable APIs during the `SerializationTraits` refactor to avoid future breakage
+- Consider migrating to stable APIs during the full migration to avoid future breakage
 
-### 2.11 Risk Assessment
+### 2.12 Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
@@ -943,6 +1212,8 @@ output.WriteRaw(buffer, size);
 | Performance regression | Medium | Medium | Benchmark before/after |
 | Breaking existing LabVIEW code | Low | High | Maintain API compatibility at DLL boundary |
 | Edge cases in nested messages | Medium | Medium | Comprehensive test coverage |
+| Future protobuf internal API changes | High | Medium | Complete migration to public APIs (Phase 2-7) |
+| Inheritance-related breakage | High | High | Remove `protobuf::Message` inheritance entirely |
 
 ---
 
