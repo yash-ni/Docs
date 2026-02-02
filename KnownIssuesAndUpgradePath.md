@@ -898,6 +898,43 @@ ReadVarintZigZag32(ptr, &value);       // Decode sint32
 ReadVarintZigZag64(ptr, &value);       // Decode sint64
 ```
 
+#### API Stability Considerations
+
+> ⚠️ **Important:** Not all wire format APIs have the same stability guarantees.
+
+| API | Namespace | Stability | Future Risk |
+|-----|-----------|-----------|-------------|
+| `CodedOutputStream` / `CodedInputStream` | `google::protobuf::io` | **Stable** | ✅ Public API, safe to use |
+| `WireFormatLite::Write*ToArray` | `google::protobuf::internal` | Medium | ⚠️ Internal but widely used |
+| `VarintParse`, `UnalignedLoad` | `google::protobuf::internal` | Low | 🔴 Internal, can change anytime |
+| `ReadVarintZigZag32/64` | `google::protobuf::internal` | Low | 🔴 Internal, can change anytime |
+
+**Current approach:** The `proto_compat` wrappers call functions from `google::protobuf::internal` namespace. These have **no stability guarantees** and could be changed or removed in any future protobuf release (just like `ReadINT32` was removed).
+
+**Recommended long-term approach:** Migrate to the **public** `CodedInputStream` / `CodedOutputStream` classes which are the only truly stable APIs:
+
+```cpp
+// STABLE PUBLIC API for decoding:
+google::protobuf::io::CodedInputStream input(data, size);
+uint32_t value;
+input.ReadVarint32(&value);       // Decode varint
+input.ReadLittleEndian32(&value); // Decode fixed32
+input.ReadLittleEndian64(&value); // Decode fixed64
+input.ReadRaw(buffer, size);      // Decode raw bytes
+
+// STABLE PUBLIC API for encoding:
+google::protobuf::io::CodedOutputStream output(stream);
+output.WriteVarint32(value);
+output.WriteLittleEndian32(value);
+output.WriteLittleEndian64(value);
+output.WriteRaw(buffer, size);
+```
+
+**Trade-offs:**
+- `CodedInputStream`/`CodedOutputStream` are slightly slower due to stream abstraction overhead
+- The `proto_compat` wrappers provide a single point of change if internals shift again
+- Consider migrating to stable APIs during the `SerializationTraits` refactor to avoid future breakage
+
 ### 2.11 Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
