@@ -5,48 +5,49 @@
 ## Table of Contents
 
 1. [Executive Summary](#1-executive-summary)
-2. [Issue #1: LVMessage Architecture Blocks gRPC Upgrade](#2-issue-1-lvmessage-architecture-blocks-grpc-upgrade)
-   - 2.1 [Understanding the Current Message Flow](#21-understanding-the-current-message-flow)
-   - 2.2 [Problem Description](#22-problem-description)
-   - 2.3 [Technical Root Cause](#23-technical-root-cause)
-   - 2.4 [Architecture Diagrams](#24-architecture-diagrams)
-   - 2.5 [Current Code-Level Flow](#25-current-code-level-serializationdeserialization-flow)
-   - 2.6 [Crash Symptoms](#26-crash-symptoms)
-   - 2.7 [Official Google Response](#27-official-google-response)
-   - 2.8 [Required Solution](#28-required-solution-custom-grpc-serializationtraits)
-   - 2.9 [Unsupported Patterns in Current Implementation](#29-unsupported-patterns-in-current-implementation)
-   - 2.10 [Migration Plan: Removing protobuf::Message Inheritance](#210-migration-plan-removing-protobufmessage-inheritance)
-   - 2.11 [Wire Format Encoding and Decoding](#211-wire-format-encoding-and-decoding)
-   - 2.12 [Risk Assessment](#212-risk-assessment)
-3. [Issue #2: Code Generation Architecture Problems](#3-issue-2-code-generation-architecture-problems)
-   - 3.1 [Problem Description](#31-problem-description)
-   - 3.2 [Slow Generation Speed](#32-slow-generation-speed)
-   - 3.3 [Tight Coupling: User and Generated Code](#33-tight-coupling-user-and-generated-code)
-   - 3.4 [Regeneration Not Working](#34-regeneration-not-working)
-   - 3.5 [Proposed Solution Architecture](#35-proposed-solution-architecture)
-   - 3.6 [Required Changes](#36-required-changes)
-4. [Issue #3: Infrastructure and Testing Deficiencies](#4-issue-3-infrastructure-and-testing-deficiencies)
+2. [Common Terminology](#2-common-terminology)
+3. [Issue #1: LVMessage Architecture Blocks gRPC Upgrade](#3-issue-1-lvmessage-architecture-blocks-grpc-upgrade)
+   - 3.1 [Understanding the Current Message Flow](#31-understanding-the-current-message-flow)
+   - 3.2 [Problem Description](#32-problem-description)
+   - 3.3 [Technical Root Cause](#33-technical-root-cause)
+   - 3.4 [Architecture Diagrams](#34-architecture-diagrams)
+   - 3.5 [Current Code-Level Flow](#35-current-code-level-serializationdeserialization-flow)
+   - 3.6 [Crash Symptoms](#36-crash-symptoms)
+   - 3.7 [Official Google Response](#37-official-google-response)
+   - 3.8 [Required Solution](#38-required-solution-custom-grpc-serializationtraits)
+   - 3.9 [Unsupported Patterns in Current Implementation](#39-unsupported-patterns-in-current-implementation)
+   - 3.10 [Migration Plan: Removing protobuf::Message Inheritance](#310-migration-plan-removing-protobufmessage-inheritance)
+   - 3.11 [Wire Format Encoding and Decoding](#311-wire-format-encoding-and-decoding)
+   - 3.12 [Risk Assessment](#312-risk-assessment)
+4. [Issue #2: Code Generation Architecture Problems](#4-issue-2-code-generation-architecture-problems)
    - 4.1 [Problem Description](#41-problem-description)
-   - 4.2 [Current Testing State](#42-current-testing-state)
-   - 4.3 [Current CI/CD Workflows](#43-current-cicd-workflows)
-   - 4.4 [Proposed Testing Architecture](#44-proposed-testing-architecture)
-   - 4.5 [Recommended Testing Framework](#45-recommended-testing-framework)
-   - 4.6 [Required Infrastructure Changes](#46-required-infrastructure-changes)
-   - 4.7 [Example Unit Test Structure](#47-example-unit-test-structure)
-   - 4.8 [CI/CD Enhancement](#48-cicd-enhancement)
-5. [Issue #4: Streaming Implementation is Not True Streaming](#5-issue-4-streaming-implementation-is-not-true-streaming)
+   - 4.2 [Slow Generation Speed](#42-slow-generation-speed)
+   - 4.3 [Tight Coupling: User and Generated Code](#43-tight-coupling-user-and-generated-code)
+   - 4.4 [Regeneration Not Working](#44-regeneration-not-working)
+   - 4.5 [Proposed Solution Architecture](#45-proposed-solution-architecture)
+   - 4.6 [Required Changes](#46-required-changes)
+5. [Issue #3: Infrastructure and Testing Deficiencies](#5-issue-3-infrastructure-and-testing-deficiencies)
    - 5.1 [Problem Description](#51-problem-description)
-   - 5.2 [Technical Analysis](#52-technical-analysis)
-   - 5.3 [Impact](#53-impact)
-   - 5.4 [Current vs True Streaming Flow](#54-current-vs-true-streaming-flow)
-   - 5.5 [Root Cause](#55-root-cause)
-   - 5.6 [Code Locations](#56-code-locations)
-   - 5.7 [Proposed Solution](#57-proposed-solution)
-   - 5.8 [Considerations](#58-considerations)
-6. [References](#6-references)
-   - 6.1 [Official Discussions](#61-official-discussions)
-   - 6.2 [Reference Implementations](#62-reference-implementations)
-   - 6.3 [Project Resources](#63-project-resources)
+   - 5.2 [Current Testing State](#52-current-testing-state)
+   - 5.3 [Current CI/CD Workflows](#53-current-cicd-workflows)
+   - 5.4 [Proposed Testing Architecture](#54-proposed-testing-architecture)
+   - 5.5 [Recommended Testing Framework](#55-recommended-testing-framework)
+   - 5.6 [Required Infrastructure Changes](#56-required-infrastructure-changes)
+   - 5.7 [Example Unit Test Structure](#57-example-unit-test-structure)
+   - 5.8 [CI/CD Enhancement](#58-cicd-enhancement)
+6. [Issue #4: Streaming Implementation is Not True Streaming](#6-issue-4-streaming-implementation-is-not-true-streaming)
+   - 6.1 [Problem Description](#61-problem-description)
+   - 6.2 [Technical Analysis](#62-technical-analysis)
+   - 6.3 [Impact](#63-impact)
+   - 6.4 [Current vs True Streaming Flow](#64-current-vs-true-streaming-flow)
+   - 6.5 [Root Cause](#65-root-cause)
+   - 6.6 [Code Locations](#66-code-locations)
+   - 6.7 [Proposed Solution](#67-proposed-solution)
+   - 6.8 [Considerations](#68-considerations)
+7. [References](#7-references)
+   - 7.1 [Official Discussions](#71-official-discussions)
+   - 7.2 [Reference Implementations](#72-reference-implementations)
+   - 7.3 [Project Resources](#73-project-resources)
 
 ---
 
@@ -63,9 +64,26 @@ The gRPC-LabVIEW project faces four critical issues that block modernization and
 
 ---
 
-## 2. Issue #1: LVMessage Architecture Blocks gRPC Upgrade
+## 2. Common Terminology
 
-### 2.1 Understanding the Current Message Flow
+This document uses the following terms consistently throughout:
+
+| Term | Definition |
+|------|------------|
+| **gRPC** | High-performance communication framework that allows services to call remote functions efficiently over HTTP/2. |
+| **Protobuf (Protocol Buffers)** | Compact binary serialization format used to define and exchange structured data between systems. |
+| **Proto Files (.proto)** | Schema definition files where you specify gRPC services and the structure of messages using Protobuf syntax. |
+| **Protoc (Protocol Buffers Compiler)** | Generates source code (data classes and gRPC stubs) from proto files. |
+| **Wire Format / Binary Format** | Low-level binary encoding of Protobuf messages—the actual bytes transmitted over the network. These terms are used interchangeably. |
+| **LVMessage** | Custom C++ class in gRPC-LabVIEW that bridges LabVIEW clusters and protobuf wire format. |
+| **SerializationTraits** | gRPC's template-based mechanism for customizing how messages are serialized/deserialized. |
+| **CodedInputStream/CodedOutputStream** | Public protobuf APIs for reading/writing wire format bytes. |
+
+---
+
+## 3. Issue #1: LVMessage Architecture Blocks gRPC Upgrade
+
+### 3.1 Understanding the Current Message Flow
 
 Before diving into the problem, it's essential to understand how data flows through gRPC-LabVIEW.
 
@@ -191,7 +209,7 @@ sequenceDiagram
 - **`CopyToCluster()`**: Copies `LVMessage._values` back to a LabVIEW cluster
 - **Serialize/Parse**: Converts between `LVMessage` and protobuf wire format bytes
 
-### 2.2 Problem Description
+### 3.2 Problem Description
 
 The current architecture uses a custom `LVMessage` class that **inherits from `google::protobuf::Message`** to handle marshalling between LabVIEW data types and Protocol Buffer messages. This approach worked in older protobuf versions but is **fundamentally broken** in gRPC v1.70.0+ (protobuf v3.29.0+).
 
@@ -203,7 +221,7 @@ class LVMessage : public google::protobuf::Message, public gRPCid
 };
 ```
 
-### 2.3 Technical Root Cause
+### 3.3 Technical Root Cause
 
 Starting with protobuf v3.29.0, the `GetClassData()` method has been changed from having a default implementation to being a **pure virtual method** that must return a complex `ClassData` structure:
 
@@ -220,7 +238,7 @@ The `ClassData` structure is:
 - Contains metadata (field descriptors, cached size offsets, parsing tables)
 - **Not feasible to construct manually**
 
-### 2.4 Architecture Diagrams
+### 3.4 Architecture Diagrams
 
 #### How LVMessage Worked Before (gRPC v1.62.0 / protobuf < v3.29.0)
 
@@ -455,7 +473,7 @@ flowchart LR
 | Wire format | Protobuf binary | Protobuf binary (same) |
 | Protobuf usage | Inheritance | Helper APIs only |
 
-### 2.5 Current Code-Level Serialization/Deserialization Flow
+### 3.5 Current Code-Level Serialization/Deserialization Flow
 
 This section details the exact method call chain in the current implementation.
 
@@ -729,7 +747,7 @@ All call sites in `lv_message.cc` should use `proto_compat::ReadINT32()` etc. in
 
 **The custom `SerializationTraits<LVMessage>` solution replaces only the wrapper methods** — all wire-format encoding helpers remain available as free functions or utility classes (either directly or via the `proto_compat` wrappers).
 
-### 2.6 Crash Symptoms
+### 3.6 Crash Symptoms
 
 When attempting to use `LVMessage` with newer protobuf:
 
@@ -748,7 +766,7 @@ When attempting to use `LVMessage` with newer protobuf:
    <- grpc::BlockingUnaryCallImpl()
    ```
 
-### 2.7 Official Google Response
+### 3.7 Official Google Response
 
 The Protobuf team has confirmed:
 
@@ -760,7 +778,7 @@ The gRPC team pointed to FlatBuffers as a reference implementation:
 > *"You can check how FlatBuffer is integrated into gRPC. FlatBuffer provides its SerializationTraits for gRPC so that gRPC can [de]serialize their messages."*  
 > — veb...@google.com, gRPC Team ([Source](https://groups.google.com/g/grpc-io/c/wVKDhOWs3ig/m/gxVMJFAQDQAJ))
 
-### 2.8 Required Solution: Custom gRPC SerializationTraits
+### 3.8 Required Solution: Custom gRPC SerializationTraits
 
 The solution is to **completely re-architect** `LVMessage` to:
 
@@ -857,7 +875,7 @@ public:
 }  // namespace grpc
 ```
 
-### 2.9 Unsupported Patterns in Current Implementation
+### 3.9 Unsupported Patterns in Current Implementation
 
 The existing `LVMessage` implementation uses several patterns that are **not supported** by Google and pose significant risk for future upgrades:
 
@@ -877,11 +895,11 @@ The solution should:
 3. ✅ Use **custom `SerializationTraits`** for gRPC integration
 4. ✅ Be **immune to protobuf internal changes**
 
-### 2.10 Migration Plan: Removing protobuf::Message Inheritance
+### 3.10 Migration Plan: Removing protobuf::Message Inheritance
 
 This section details the complete migration from the unsupported inheritance-based approach to a fully compliant standalone implementation.
 
-#### 2.10.1 Dependencies on protobuf::Message
+#### 4.1 Dependencies on protobuf::Message
 
 The `LVMessage` class inherits from `google::protobuf::Message` and relies on:
 
@@ -914,7 +932,7 @@ google::protobuf::internal::ParseContext                // Replace with CodedInp
 google::protobuf::io::EpsCopyOutputStream               // Replace with CodedOutputStream
 ```
 
-#### 2.10.2 Methods to Delete
+#### 4.2 Methods to Delete
 
 These methods exist only to satisfy the `protobuf::Message` interface and can be deleted:
 
@@ -934,7 +952,7 @@ google::protobuf::Metadata GetMetadata() const final;
 google::protobuf::UnknownFieldSet& UnknownFields();  // If dropping unknown field support
 ```
 
-#### 2.10.3 Methods to Reimplement
+#### 4.3 Methods to Reimplement
 
 **Orchestration Methods (new implementations needed):**
 
@@ -995,7 +1013,7 @@ bool ParseInternal(google::protobuf::io::CodedInputStream* input) {
 }
 ```
 
-#### 2.10.4 Parse Methods Migration
+#### 4.4 Parse Methods Migration
 
 Each `Parse*` method must change from pointer-based to stream-based:
 
@@ -1068,7 +1086,7 @@ bool LVMessage::ParseInt32(const MessageElementMetadata& fieldInfo,
 | `ParseBytes` | `InlineGreedyStringParser` | `ReadString` |
 | `ParseNestedMessage` | `ParseMessage` | `ReadMessage` or manual |
 
-#### 2.10.5 Serialize Methods Migration
+#### 4.5 Serialize Methods Migration
 
 The `LVMessageValue` subclasses also need updating:
 
@@ -1092,7 +1110,7 @@ class LVVariableMessageValue<int> {
 };
 ```
 
-#### 2.10.6 Files Requiring Modification
+#### 4.6 Files Requiring Modification
 
 | File | Change Type | Description |
 |------|-------------|-------------|
@@ -1106,7 +1124,7 @@ class LVVariableMessageValue<int> {
 | `src/grpc_server.cc` | **Minor** | May need minor updates |
 | `src/event_data.cc` | **Minor** | Already calls our methods directly |
 
-#### 2.10.8 Migration Strategy
+#### 4.8 Migration Strategy
 
 **Recommended approach: Incremental migration**
 
@@ -1120,7 +1138,7 @@ class LVVariableMessageValue<int> {
 
 This allows testing at each phase and easy rollback if issues arise.
 
-### 2.11 Wire Format Encoding and Decoding
+### 3.11 Wire Format Encoding and Decoding
 
 The existing parsing/serialization logic (in `_InternalParse` and `_InternalSerialize`) can be preserved using protobuf's **public helper APIs**:
 
@@ -1204,7 +1222,7 @@ output.WriteRaw(buffer, size);
 - The `proto_compat` wrappers provide a single point of change if internals shift again
 - Consider migrating to stable APIs during the full migration to avoid future breakage
 
-### 2.12 Risk Assessment
+### 3.12 Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
@@ -1217,9 +1235,9 @@ output.WriteRaw(buffer, size);
 
 ---
 
-## 3. Issue #2: Code Generation Architecture Problems
+## 4. Issue #2: Code Generation Architecture Problems
 
-### 3.1 Problem Description
+### 4.1 Problem Description
 
 The current code generation architecture suffers from three interconnected problems:
 
@@ -1227,7 +1245,7 @@ The current code generation architecture suffers from three interconnected probl
 2. **Tight Coupling Between User and Generated Code**
 3. **Regeneration Not Working Properly**
 
-### 3.2 Slow Generation Speed
+### 4.2 Slow Generation Speed
 
 #### Symptoms
 - Large `.proto` files take excessive time to generate LabVIEW code due to synchronous, monolithic processing
@@ -1247,7 +1265,7 @@ The `labview_grpc_generator` (implemented in `src/proto_parser.cc`) parses proto
 └─────────────────┘     └───────────────────────┘     └─────────────────┘
 ```
 
-### 3.3 Tight Coupling: User and Generated Code
+### 4.3 Tight Coupling: User and Generated Code
 
 #### Symptoms
 - Users modify generated VIs (e.g., implementing service logic)
@@ -1265,13 +1283,13 @@ Users are forced to:
 - Maintain manual patches after each regeneration
 - Fork generated code and manage merge conflicts
 
-### 3.4 Regeneration Not Working
+### 4.4 Regeneration Not Working
 
 #### Symptoms
 - Regenerating code after `.proto` changes causes errors after implementing oneof 
 
 
-### 3.5 Proposed Solution Architecture
+### 4.5 Proposed Solution Architecture
 
 ```
 ┌─────────────────┐
@@ -1302,7 +1320,7 @@ Users are forced to:
                   └─────────────────┘
 ```
 
-### 3.6 Required Changes
+### 4.6 Required Changes
 
 | Component | Change |
 |-----------|--------|
@@ -1314,9 +1332,9 @@ Users are forced to:
 
 ---
 
-## 4. Issue #3: Infrastructure and Testing Deficiencies
+## 5. Issue #3: Infrastructure and Testing Deficiencies
 
-### 4.1 Problem Description
+### 5.1 Problem Description
 
 The project has **minimal automated testing**, making it difficult to:
 - Detect regressions
@@ -1324,7 +1342,7 @@ The project has **minimal automated testing**, making it difficult to:
 - Ensure cross-platform compatibility
 - Maintain quality during upgrades
 
-### 4.2 Current Testing State
+### 5.2 Current Testing State
 
 ```
 tests/
@@ -1347,7 +1365,7 @@ tests/
 | **No Coverage Metrics** | Unknown test coverage |
 | **Limited CI/CD** | Build-only workflows, no automated test runs |
 
-### 4.3 Current CI/CD Workflows
+### 5.3 Current CI/CD Workflows
 
 ```yaml
 # From .github/workflows/ci.yml - BUILD ONLY, NO TESTS
@@ -1363,7 +1381,7 @@ jobs:
   # NOTE: No test jobs!
 ```
 
-### 4.4 Proposed Testing Architecture
+### 5.4 Proposed Testing Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1394,7 +1412,7 @@ jobs:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.5 Recommended Testing Framework
+### 5.5 Recommended Testing Framework
 
 | Layer | Framework | Rationale |
 |-------|-----------|-----------|
@@ -1402,7 +1420,7 @@ jobs:
 | C++ Integration | Google Test + gRPC testing | Test real RPC scenarios |
 | E2E Tests | Existing LabVIEW tests | Maintain for full-stack validation |
 
-### 4.6 Required Infrastructure Changes
+### 5.6 Required Infrastructure Changes
 
 | Component | Description |
 |-----------|-------------|
@@ -1414,7 +1432,7 @@ jobs:
 | CI/CD test integration | GitHub Actions updates |
 | Test coverage reporting | Codecov/similar integration |
 
-### 4.7 Example Unit Test Structure
+### 5.7 Example Unit Test Structure
 
 ```cpp
 // tests/unit/lv_message_test.cc
@@ -1452,7 +1470,7 @@ TEST_F(LVMessageTest, SerializeRepeatedField) {
 }
 ```
 
-### 4.8 CI/CD Enhancement
+### 5.8 CI/CD Enhancement
 
 ```yaml
 # Proposed addition to CI workflow
@@ -1473,13 +1491,13 @@ jobs:
 
 ---
 
-## 5. Issue #4: Streaming Implementation is Not True Streaming
+## 6. Issue #4: Streaming Implementation is Not True Streaming
 
-### 5.1 Problem Description
+### 6.1 Problem Description
 
 The current streaming implementation (server streaming, client streaming, and bidirectional streaming) is **not true asynchronous streaming**. Instead, it uses **synchronous, blocking operations** that process messages one at a time, significantly limiting throughput and scalability.
 
-### 5.2 Technical Analysis
+### 6.2 Technical Analysis
 
 #### Server-Side Streaming (event_data.cc)
 
@@ -1544,7 +1562,7 @@ class ClientStreamingClientCall : public ClientCall, public StreamWriter
 };
 ```
 
-### 5.3 Impact
+### 6.3 Impact
 
 | Aspect | Current Behavior | True Streaming Behavior |
 |--------|-----------------|------------------------|
@@ -1555,7 +1573,7 @@ class ClientStreamingClientCall : public ClientCall, public StreamWriter
 | **Latency** | High (wait for each ACK) | Low (fire-and-forget writes) |
 | **Scalability** | Poor for high-throughput scenarios | Good for high-throughput |
 
-### 5.4 Current vs True Streaming Flow
+### 6.4 Current vs True Streaming Flow
 
 #### Current Implementation (Pseudo-Streaming)
 
@@ -1596,7 +1614,7 @@ Time: serialization + network latency + deserialization
       (messages pipelined, not sequential)
 ```
 
-### 5.5 Root Cause
+### 6.5 Root Cause
 
 1. **API Design**: The LabVIEW-facing API was designed for simplicity, using synchronous semantics that are easier to integrate with LabVIEW's event-driven programming model.
 
@@ -1608,7 +1626,7 @@ Time: serialization + network latency + deserialization
    - True concurrent streaming is impossible with this architecture
    - Multiple simultaneous streams compete for the same event handler
 
-### 5.6 Code Locations
+### 6.6 Code Locations
 
 | File | Component | Issue |
 |------|-----------|-------|
@@ -1618,7 +1636,7 @@ Time: serialization + network latency + deserialization
 | `src/grpc_client.cc` | `ClientStreamingClientCall` | Uses sync `ClientWriter` |
 | `src/grpc_client.cc` | `BidiStreamingClientCall` | Uses sync `ClientReaderWriter` |
 
-### 5.7 Proposed Solution
+### 6.7 Proposed Solution
 
 #### Option A: Async Queued Streaming (Recommended)
 
@@ -1697,7 +1715,7 @@ LIBRARY_EXPORT int32_t BeginAsyncWrite(
 }
 ```
 
-### 5.8 Considerations
+### 6.8 Considerations
 
 1. **Backward Compatibility**: New async API should coexist with existing sync API
 2. **LabVIEW Integration**: Need to design LabVIEW-friendly async patterns (queues, events)
@@ -1707,9 +1725,9 @@ LIBRARY_EXPORT int32_t BeginAsyncWrite(
 
 ---
 
-## 6. References
+## 7. References
 
-### 6.1 Official Discussions
+### 7.1 Official Discussions
 
 1. **Protobuf Team Response** (GetClassData issue)
    - URL: https://groups.google.com/g/protobuf/c/Ej4RAPkwKsY/m/OgEiNuC4AAAJ
@@ -1719,13 +1737,13 @@ LIBRARY_EXPORT int32_t BeginAsyncWrite(
    - URL: https://groups.google.com/g/grpc-io/c/wVKDhOWs3ig/m/gxVMJFAQDQAJ
    - Key Contact: veb...@google.com (gRPC Team)
 
-### 6.2 Reference Implementations
+### 7.2 Reference Implementations
 
 1. **FlatBuffers gRPC Integration**
    - SerializationTraits: https://github.com/google/flatbuffers/blob/main/include/flatbuffers/grpc.h#L261-L295
    - Shows correct pattern for custom message types with gRPC
 
-### 6.3 Project Resources
+### 7.3 Project Resources
 
 1. **gRPC-LabVIEW Repository**
    - GitHub: https://github.com/ni/grpc-labview
@@ -1792,3 +1810,8 @@ LIBRARY_EXPORT int32_t BeginAsyncWrite(
 │  };                                                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+
+
+
+
